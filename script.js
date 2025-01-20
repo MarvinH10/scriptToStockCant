@@ -37,7 +37,6 @@ async function autenticarEnOdoo() {
                 }
             );
         });
-        // console.log('Autenticación exitosa en Odoo. UID:', uid);
         return uid;
     } catch (error) {
         console.error('Error al autenticar en Odoo:', error);
@@ -45,17 +44,58 @@ async function autenticarEnOdoo() {
     }
 }
 
-async function fetchDatosOdoo(uid, model, domain, fields) {
+async function getProductIdByCode(uid, productCode) {
     return new Promise((resolve, reject) => {
         object.methodCall(
             'execute_kw',
-            [ODOO_BD, uid, ODOO_PASSWORD, model, 'search_read', [domain], { fields }],
+            [
+                ODOO_BD,
+                uid,
+                ODOO_PASSWORD,
+                'product.product',
+                'search_read',
+                [[['default_code', '=', productCode]]],
+                { fields: ['id'], limit: 1 },
+            ],
             (error, result) => {
                 if (error) {
-                    console.error(`Error al consultar el modelo ${model}:`, error);
+                    console.error(`Error al buscar el producto '${productCode}':`, error);
+                    reject(error);
+                } else if (result.length === 0) {
+                    console.error(`Producto con código '${productCode}' no encontrado.`);
+                    reject(new Error(`Producto con código '${productCode}' no encontrado.`));
+                } else {
+                    resolve(result[0].id);
+                }
+            }
+        );
+    });
+}
+
+async function createStockQuant(uid, locationId, productId, quantity) {
+    return new Promise((resolve, reject) => {
+        const params = {
+            location_id: locationId,
+            product_id: productId,
+            inventory_quantity: quantity,
+        };
+
+        object.methodCall(
+            'execute_kw',
+            [
+                ODOO_BD,
+                uid,
+                ODOO_PASSWORD,
+                'stock.quant',
+                'create',
+                [params],
+            ],
+            (error, result) => {
+                if (error) {
+                    console.error('Error al crear el registro en stock.quant:', error);
                     reject(error);
                 } else {
-                    console.log(`Datos obtenidos del modelo ${model}:`, JSON.stringify(result, null, 2));
+                    console.log('Registro creado en stock.quant:', result);
                     resolve(result);
                 }
             }
@@ -63,44 +103,53 @@ async function fetchDatosOdoo(uid, model, domain, fields) {
     });
 }
 
-async function obtenerDatos(uid) {
-    const product_template = await fetchDatosOdoo(uid, 'product.template', [['type', '=', 'product']], ['id', 'name', 'categ_id', 'default_code', 'list_price', 'barcode']);
-
-    const idsProductTemplate = product_template.map(producto => producto.id);
-
-    const product_product = await fetchDatosOdoo(uid, 'product.product', [['product_tmpl_id', 'in', idsProductTemplate]], ['id', 'name', 'default_code', 'lst_price', 'barcode', 'product_tmpl_id']);
-
-    const attribute_lines = await fetchDatosOdoo(uid, 'product.template.attribute.line', [['product_tmpl_id', 'in', idsProductTemplate]], ['id', 'product_tmpl_id', 'attribute_id', 'value_ids']);
-
-    const value_ids = attribute_lines.flatMap(line => line.value_ids);
-    const attribute_values = await fetchDatosOdoo(uid, 'product.attribute.value', [['id', 'in', value_ids]], ['id', 'name', 'attribute_id']);
-
-    const datosCombinados = product_template.map(producto => {
-        const variantesProducto = product_product.filter(vari => vari.product_tmpl_id[0] === producto.id);
-        const atributosProducto = attribute_lines
-            .filter(line => line.product_tmpl_id[0] === producto.id)
-            .map(line => ({
-                attribute_id: line.attribute_id[1],
-                values: line.value_ids.map(valueId => {
-                    const value = attribute_values.find(val => val.id === valueId);
-                    return value ? { id: value.id, name: value.name } : null;
-                }).filter(val => val !== null),
-            }));
-
-        return {
-            ...producto,
-            product_product: variantesProducto.map(vari => ({
-                id: vari.id,
-                name: vari.name,
-                default_code: vari.default_code,
-                lst_price: vari.lst_price,
-                barcode: vari.barcode,
-            })),
-            product_template_attribute_line: atributosProducto,
-        };
+async function getLocationId(uid, locationName) {
+    return new Promise((resolve, reject) => {
+        object.methodCall(
+            'execute_kw',
+            [
+                ODOO_BD,
+                uid,
+                ODOO_PASSWORD,
+                'stock.location',
+                'search_read',
+                [[['complete_name', '=', locationName]]],
+                { fields: ['id'], limit: 1 },
+            ],
+            (error, result) => {
+                if (error) {
+                    console.error(`Error al buscar la ubicación '${locationName}':`, error);
+                    reject(error);
+                } else if (result.length === 0) {
+                    console.error(`Ubicación '${locationName}' no encontrada.`);
+                    reject(new Error(`Ubicación '${locationName}' no encontrada.`));
+                } else {
+                    resolve(result[0].id);
+                }
+            }
+        );
     });
+}
 
-    return datosCombinados;
+async function procesarStock(uid) {
+    try {
+        const stockData = JSON.parse(fs.readFileSync('stock_data.json', 'utf8'));
+
+        for (const data of stockData) {
+            try {
+                const productCode = data.product_id.match(/^\[(.*?)\]/)[1];
+                const productId = await getProductIdByCode(uid, productCode);
+
+                const locationId = await getLocationId(uid, data.location_id);
+
+                await createStockQuant(uid, locationId, productId, data.quantity);
+            } catch (error) {
+                console.error('Error al procesar stock:', error);
+            }
+        }
+    } catch (error) {
+        console.error('Error al leer el archivo JSON:', error);
+    }
 }
 
 (async () => {
@@ -111,11 +160,8 @@ async function obtenerDatos(uid) {
             return;
         }
 
-        const datosCombinados = await obtenerDatos(uid);
-
-        const outputFile = 'datos_odoo.json';
-        fs.writeFileSync(outputFile, JSON.stringify(datosCombinados, null, 2), 'utf8');
-        console.log('Datos guardados en', outputFile);
+        await procesarStock(uid);
+        console.log('Procesamiento de stock completado.');
     } catch (error) {
         console.error('Error durante la ejecución:', error);
     }

@@ -1,0 +1,17 @@
+[
+  {
+      "product_id": "[fdgdfgd] Prueba Producto (M)",
+      "location_id": "KD01/TIENDA",
+      "quantity": 22
+  },
+  {
+      "product_id": "[sadasdas] Prueba Producto (S)",
+      "location_id": "KD01/TIENDA",
+      "quantity": 25
+  },
+  {
+      "product_id": "[werwerwe] Prueba Producto (XS)",
+      "location_id": "KD01/TIENDA",
+      "quantity": 28
+  }
+]
