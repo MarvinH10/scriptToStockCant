@@ -53,7 +53,7 @@ async function autenticarEnOdoo() {
 async function getProductId(uid, productCode, productName) {
     return new Promise((resolve, reject) => {
         const domain = [];
-        
+
         if (productCode) {
             domain.push(['default_code', '=', productCode]);
         }
@@ -91,6 +91,34 @@ async function getProductId(uid, productCode, productName) {
                         console.log(`Producto encontrado: ${product.id}`);
                         resolve({ id: product.id, valid: true });
                     }
+                }
+            }
+        );
+    });
+}
+
+async function getVariantValueId(uid, variantValue) {
+    return new Promise((resolve, reject) => {
+        object.methodCall(
+            'execute_kw',
+            [
+                ODOO_BD,
+                uid,
+                ODOO_PASSWORD,
+                'product.template.attribute.value',
+                'search_read',
+                [[['name', '=', variantValue]]],
+                { fields: ['id'], limit: 1 },
+            ],
+            (error, result) => {
+                if (error) {
+                    console.error(`Error al buscar el valor de variante '${variantValue}': ${error.message}`);
+                    reject(error);
+                } else if (result.length === 0) {
+                    console.log(`Valor de variante no encontrado: ${variantValue}`);
+                    resolve(null);
+                } else {
+                    resolve(result[0].id);
                 }
             }
         );
@@ -167,6 +195,8 @@ async function procesarStock(uid) {
                 const defaultCodeMatch = data.product_id.match(/\[(.*?)\]/);
                 const defaultCode = defaultCodeMatch ? defaultCodeMatch[1].trim() : null;
                 const productName = data.product_id.replace(/\[.*?\]/, '').trim();
+                const variantMatch = data.product_id.match(/\((.*?)\)$/);
+                const variant = variantMatch ? variantMatch[1].trim() : null;
 
                 let product = null;
 
@@ -177,7 +207,41 @@ async function procesarStock(uid) {
 
                 if (!product && productName) {
                     console.log(`Buscando por nombre: ${productName}`);
-                    product = await getProductId(uid, null, productName);e
+                    product = await getProductId(uid, null, productName);
+                }
+
+                if (!product && variant) {
+                    console.log(`Buscando ID de variante para: ${variant}`);
+                    const variantId = await getVariantValueId(uid, variant);
+
+                    if (variantId) {
+                        console.log(`Buscando por variante ID: ${variantId}`);
+                        product = await new Promise((resolve, reject) => {
+                            object.methodCall(
+                                'execute_kw',
+                                [
+                                    ODOO_BD,
+                                    uid,
+                                    ODOO_PASSWORD,
+                                    'product.product',
+                                    'search_read',
+                                    [[['product_template_variant_value_ids', 'in', [variantId]]]],
+                                    { fields: ['id', 'default_code', 'name', 'type'], limit: 1 },
+                                ],
+                                (error, result) => {
+                                    if (error) {
+                                        console.error(`Error al buscar el producto por variante ID: ${error.message}`);
+                                        reject(error);
+                                    } else if (result.length === 0) {
+                                        console.log(`Producto no encontrado para variante ID: ${variantId}`);
+                                        resolve(null);
+                                    } else {
+                                        resolve(result[0]);
+                                    }
+                                }
+                            );
+                        });
+                    }
                 }
 
                 if (!product) {
