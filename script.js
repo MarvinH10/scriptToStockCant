@@ -50,19 +50,19 @@ async function autenticarEnOdoo() {
     }
 }
 
-async function getProductId(uid, productCode, productName, attributeValues = []) {
+async function getProductId(uid, productCode, productName) {
     return new Promise((resolve, reject) => {
-        const domain = [['default_code', '=', productCode]];
+        const domain = [];
+        
+        if (productCode) {
+            domain.push(['default_code', '=', productCode]);
+        }
 
         if (productName) {
             domain.push(['name', '=', productName]);
         }
 
-        if (attributeValues.length > 0) {
-            attributeValues.forEach(value => {
-                domain.push(['product_template_attribute_value_ids.name', '=', value]);
-            });
-        }
+        console.log(`Buscando producto con dominio: ${JSON.stringify(domain)}`);
 
         object.methodCall(
             'execute_kw',
@@ -73,18 +73,24 @@ async function getProductId(uid, productCode, productName, attributeValues = [])
                 'product.product',
                 'search_read',
                 [domain],
-                { fields: ['id', 'product_template_attribute_value_ids'], limit: 1 },
+                { fields: ['id', 'default_code', 'name', 'type'], limit: 1 },
             ],
             (error, result) => {
                 if (error) {
                     console.error(`Error al buscar el producto: ${error.message}`);
                     reject(error);
                 } else if (result.length === 0) {
-                    console.log(`Producto no encontrado para: Código: ${productCode}, Nombre: ${productName}, Atributos: ${attributeValues}`);
+                    console.log(`Producto no encontrado: Nombre: ${productName}, Código: ${productCode}`);
                     resolve(null);
                 } else {
-                    console.log(`Producto encontrado: ${result[0].id}`);
-                    resolve(result[0].id);
+                    const product = result[0];
+                    if (product.type === 'consu' || product.type === 'service') {
+                        console.log(`Producto no válido para inventario: ${productName} (${product.type})`);
+                        resolve({ id: product.id, valid: false });
+                    } else {
+                        console.log(`Producto encontrado: ${product.id}`);
+                        resolve({ id: product.id, valid: true });
+                    }
                 }
             }
         );
@@ -158,43 +164,50 @@ async function procesarStock(uid) {
             console.log(`Procesando producto ${index + 1} de ${stockData.length}:`, data.product_id);
 
             try {
-                const productCodeMatch = data.product_id.match(/\[(.*?)\]/);
-                const productCode = productCodeMatch ? productCodeMatch[1] : null;
+                const defaultCodeMatch = data.product_id.match(/\[(.*?)\]/);
+                const defaultCode = defaultCodeMatch ? defaultCodeMatch[1].trim() : null;
+                const productName = data.product_id.replace(/\[.*?\]/, '').trim();
 
-                const attributesMatch = data.product_id.match(/\((.*?)\)$/);
-                const attributeValues = attributesMatch ? attributesMatch[1].split(',').map(v => v.trim()) : [];
+                let product = null;
 
-                const productName = data.product_id
-                    .replace(/^\[.*?\]\s*/, '')
-                    .replace(/\s*\(.*?\)$/, '');
+                if (defaultCode) {
+                    console.log(`Buscando por default_code: ${defaultCode}`);
+                    product = await getProductId(uid, defaultCode, null);
+                }
 
-                if (!productCode) {
-                    console.error(`Producto inválido: ${data.product_id}`);
-                    report.notFound.push({ product: data.product_id, reason: 'Código inválido' });
+                if (!product && productName) {
+                    console.log(`Buscando por nombre: ${productName}`);
+                    product = await getProductId(uid, null, productName);e
+                }
+
+                if (!product) {
+                    console.error(`Producto no encontrado: ${data.product_id}`);
+                    report.notFound.push({ product: data.product_id, reason: 'Producto no encontrado' });
                     continue;
                 }
 
-                const productId = await getProductId(uid, productCode, productName, attributeValues);
-
-                if (!productId) {
-                    report.notFound.push({ product: data.product_id, reason: 'Producto no encontrado' });
+                if (!product.valid) {
+                    console.error(`Producto no válido para inventario: ${data.product_id}`);
+                    report.notFound.push({ product: data.product_id, reason: 'Producto no válido para inventario' });
                     continue;
                 }
 
                 const locationId = await getLocationId(uid, data.location_id);
                 if (!locationId) {
+                    console.error(`Ubicación no encontrada: ${data.location_id}`);
                     report.notFound.push({ product: data.product_id, reason: 'Ubicación no encontrada' });
                     continue;
                 }
 
-                await createStockQuant(uid, locationId, productId, data.quantity);
+                await createStockQuant(uid, locationId, product.id, data.quantity);
                 report.success.push({
                     product: data.product_id,
                     location: data.location_id,
                     quantity: data.quantity,
                 });
+                console.log(`Registro creado para producto: ${data.product_id}`);
             } catch (error) {
-                console.error(`Error al procesar el registro ${index + 1}: ${error.message}`);
+                console.error(`Error al procesar el producto ${index + 1} (${data.product_id}): ${error.message}`);
                 report.errors.push({ product: data.product_id, error: error.message });
             }
         }
